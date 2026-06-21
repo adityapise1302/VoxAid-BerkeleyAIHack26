@@ -7,17 +7,21 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
-from app.schemas import ErrorDetail, ErrorResponse, HealthResponse, VoiceTransformResponse
+from app.schemas import (
+    AgentverseRouteRequest,
+    AgentverseRouteResponse,
+    ErrorDetail,
+    ErrorResponse,
+    HealthResponse,
+    VoiceTransformResponse,
+)
 from app.services.pipeline import VoicePipeline
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-
-    # Loads the local Wav2Vec2 + LoRA model once at startup.
     app.state.pipeline = VoicePipeline(settings)
-
     yield
 
 
@@ -25,7 +29,7 @@ settings = get_settings()
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.1.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -47,17 +51,22 @@ async def health(request: Request):
         stt_model_loaded=pipeline_exists,
         claude_ready=bool(settings.ANTHROPIC_API_KEY),
         deepgram_ready=bool(settings.DEEPGRAM_API_KEY),
+        agentverse_ready=bool(settings.agentverse_api_key),
     )
 
 
 @app.post("/api/v1/voice/transform", response_model=VoiceTransformResponse)
 async def transform_voice(
     request: Request,
-    audio_file: Annotated[UploadFile, File(description="Recorded WAV audio")],
+    audio_file: Annotated[UploadFile, File(description="Recorded audio")],
     voice_model: Annotated[
         str | None,
         Form(description="Optional Deepgram Aura voice model"),
     ] = None,
+    enable_agentverse: Annotated[
+        bool,
+        Form(description="Enable Agentverse conversational routing"),
+    ] = True,
 ):
     try:
         content_type = audio_file.content_type or ""
@@ -93,6 +102,7 @@ async def transform_voice(
             audio_bytes,
             voice_model,
             audio_file.filename,
+            enable_agentverse,
         )
 
         return VoiceTransformResponse(**result)
@@ -103,6 +113,35 @@ async def transform_voice(
             content=ErrorResponse(
                 error=ErrorDetail(
                     code="PROCESSING_ERROR",
+                    message=str(exc),
+                )
+            ).model_dump(),
+        )
+
+
+@app.post("/api/v1/agentverse/route", response_model=AgentverseRouteResponse)
+async def route_agentverse_text(request: Request, payload: AgentverseRouteRequest):
+    try:
+        pipeline: VoicePipeline = request.app.state.pipeline
+        corrected_text = payload.text.strip()
+
+        result = await run_in_threadpool(
+            pipeline.route_agentverse_text,
+            corrected_text,
+        )
+
+        return AgentverseRouteResponse(
+            success=True,
+            corrected_text=corrected_text,
+            agentverse=result,
+        )
+
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="AGENTVERSE_ROUTING_ERROR",
                     message=str(exc),
                 )
             ).model_dump(),

@@ -14,14 +14,24 @@ class Settings(BaseSettings):
     STT_SAMPLE_RATE: int = 16000
     DEVICE: str = "auto"
 
-    ANTHROPIC_API_KEY: str
+    ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 
-    DEEPGRAM_API_KEY: str
+    DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_AURA_MODEL: str = "aura-2-thalia-en"
     DEEPGRAM_ENCODING: str = "mp3"
     DEEPGRAM_CONTAINER: str = ""
     DEEPGRAM_SAMPLE_RATE: int = 22050
+
+    # Fetch.ai / Agentverse
+    FETCHAI_AGENTVERSE_API_KEY: str = ""
+    AGENTVERSE_API_KEY: str = ""
+    AGENTVERSE_SEARCH_URL: str = "https://agentverse.ai/v1/search/agents"
+    AGENTVERSE_TIMEOUT_SECONDS: float = 10.0
+    AGENTVERSE_PROTOCOL_DIGEST: str = ""
+    AGENTVERSE_CHAT_WAIT_SECONDS: int = 60
+    AGENTVERSE_RELAY_AGENT_ADDRESS: str = ""
+    AGENTVERSE_START_SESSION: bool = False
 
     MAX_TTS_CHARS: int = 2000
 
@@ -38,6 +48,10 @@ class Settings(BaseSettings):
             for origin in self.CORS_ALLOW_ORIGINS.split(",")
             if origin.strip()
         ]
+
+    @property
+    def agentverse_api_key(self) -> str:
+        return self.FETCHAI_AGENTVERSE_API_KEY or self.AGENTVERSE_API_KEY
 
 
 @lru_cache

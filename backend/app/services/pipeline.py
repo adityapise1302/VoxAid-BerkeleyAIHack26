@@ -2,6 +2,7 @@ import base64
 import time
 
 from app.config import Settings
+from app.services.agentverse_router import AgentverseRouter
 from app.services.audio_preprocess import audio_bytes_to_waveform
 from app.services.claude_corrector import ClaudeCorrector
 from app.services.deepgram_tts import DeepgramAuraTTS
@@ -32,7 +33,15 @@ class VoicePipeline:
             sample_rate=settings.DEEPGRAM_SAMPLE_RATE,
         )
 
-    def process(self, audio_bytes: bytes, voice_model: str, filename: str | None = None) -> dict:
+        self.agentverse_router = AgentverseRouter(settings)
+
+    def process(
+        self,
+        audio_bytes: bytes,
+        voice_model: str | None = None,
+        filename: str | None = None,
+        enable_agentverse: bool = True,
+    ) -> dict:
         start = time.perf_counter()
 
         waveform = audio_bytes_to_waveform(
@@ -45,8 +54,19 @@ class VoicePipeline:
 
         corrected_text = self.corrector.correct(raw_transcript)
 
-        # Keep TTS request safely bounded.
-        tts_text = corrected_text[: self.settings.MAX_TTS_CHARS]
+        agentverse_result = None
+
+        if enable_agentverse:
+            agentverse_result = self.agentverse_router.route(
+                corrected_text=corrected_text,
+            )
+
+        if agentverse_result and agentverse_result.get("spoken_summary"):
+            tts_text = agentverse_result["spoken_summary"]
+        else:
+            tts_text = corrected_text
+
+        tts_text = tts_text[: self.settings.MAX_TTS_CHARS]
 
         output_audio_bytes = self.tts.synthesize(
             text=tts_text,
@@ -63,4 +83,9 @@ class VoicePipeline:
             "audio_mime_type": self.tts.mime_type,
             "voice_model": voice_model or self.settings.DEEPGRAM_AURA_MODEL,
             "processing_time_ms": processing_time_ms,
+            "agentverse": agentverse_result,
         }
+
+    def route_agentverse_text(self, text: str) -> dict:
+        corrected_text = (text or "").strip()
+        return self.agentverse_router.route(corrected_text=corrected_text)

@@ -3,6 +3,8 @@ import streamlit as st
 import requests
 import base64
 import os
+import json
+import hashlib
 
 # ── Config ────────────────────────────────────────────────────
 try:
@@ -116,90 +118,138 @@ for example in EXAMPLES:
 
     st.markdown("---")
 
-# ── Live recording section ────────────────────────────────────
-st.header("🎤 Try It Live")
+# ── Voice-only Agentverse chatbot section ──────────────────────
+
+st.header("🎤 Voice Chat with VoxAid")
 st.markdown(
-    "Record yourself speaking — or have someone with a speech impairment try it. "
-    "The pipeline will transcribe and clean your speech in real time."
+    "Use your voice only. VoxAid will show what the STT model heard, what the agent "
+    "deciphered, and the Agentverse response. The response is spoken automatically."
 )
 
-st.subheader("Step 1 — Record your speech")
-audio_value = st.audio_input(
-    "Record your speech",
-    sample_rate=16000,
-)
+if "voxaid_chat" not in st.session_state:
+    st.session_state.voxaid_chat = []
+
+if "last_audio_hash" not in st.session_state:
+    st.session_state.last_audio_hash = None
+
+
+def render_chat_message(message: dict):
+    role = message.get("role")
+
+    if role == "user":
+        with st.chat_message("user"):
+            st.markdown("#### You")
+            st.markdown("**STT model heard:**")
+            st.code(message.get("raw_transcript", ""), language=None)
+
+            st.markdown("**VoxAid deciphered:**")
+            st.success(message.get("corrected_text", ""))
+
+    elif role == "agent":
+        with st.chat_message("assistant"):
+            mode = message.get("mode", "speech_only")
+            agent_text = message.get("agent_text", "")
+            audio_base64 = message.get("audio_base64", "")
+            audio_mime_type = message.get("audio_mime_type", "audio/mpeg")
+
+            if mode == "agentverse_task":
+                st.markdown("#### Agentverse Agent")
+            else:
+                st.markdown("#### VoxAid")
+
+            st.markdown(agent_text)
+
+            if audio_base64:
+                try:
+                    audio_bytes = base64.b64decode(audio_base64)
+                    st.audio(audio_bytes, format=audio_mime_type, autoplay=True)
+                except TypeError:
+                    audio_bytes = base64.b64decode(audio_base64)
+                    st.audio(audio_bytes, format=audio_mime_type)
+
+for message in st.session_state.voxaid_chat:
+    render_chat_message(message)
+
+
+st.markdown("---")
+st.subheader("Record your next message")
+
+try:
+    audio_value = st.audio_input("Speak to VoxAid", sample_rate=16000)
+except TypeError:
+    audio_value = st.audio_input("Speak to VoxAid")
+
+
+def process_voice_message(audio_file):
+    audio_bytes = audio_file.getvalue()
+    audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+
+    if st.session_state.last_audio_hash == audio_hash:
+        return
+
+    st.session_state.last_audio_hash = audio_hash
+
+    with st.spinner("VoxAid is listening, deciphering, routing, and speaking..."):
+        response = requests.post(
+            f"{backend_url}/api/v1/voice/transform",
+            files={
+                "audio_file": ("recording.wav", audio_bytes, "audio/wav"),
+            },
+            data={
+                "voice_model": voice_model,
+                "enable_agentverse": "true",
+            },
+            timeout=180,
+        )
+
+    if response.status_code != 200:
+        try:
+            st.error("Backend request failed.")
+            st.json(response.json())
+        except Exception:
+            st.error(response.text)
+        return
+
+    result = response.json()
+
+    if not result.get("success"):
+        st.error("Backend returned an error.")
+        st.json(result)
+        return
+
+    agentverse = result.get("agentverse") or {}
+
+    st.session_state.voxaid_chat.append(
+        {
+            "role": "user",
+            "raw_transcript": result.get("raw_transcript", ""),
+            "corrected_text": result.get("corrected_text", ""),
+        }
+    )
+
+    st.session_state.voxaid_chat.append(
+        {
+            "role": "agent",
+            "mode": agentverse.get("mode", "speech_only"),
+            "action_status": agentverse.get("action_status", "none"),
+            "selected_agent": agentverse.get("selected_agent"),
+            "agent_text": agentverse.get("agent_text") or result.get("corrected_text", ""),
+            "audio_base64": result.get("audio_base64", ""),
+            "audio_mime_type": result.get("audio_mime_type", "audio/mpeg"),
+            "voice_model": result.get("voice_model", ""),
+        }
+    )
+
+    st.rerun()
+
 
 if audio_value is not None:
-    st.markdown("**Your recording:**")
-    st.audio(audio_value, format="audio/wav")
+    process_voice_message(audio_value)
 
+
+if st.session_state.voxaid_chat:
     st.markdown("---")
-    st.subheader("Step 2 — Process Recording")
-
-    if st.button("▶️ Process Recording", type="primary", use_container_width=True):
-        with st.spinner("Sending to backend and processing..."):
-            try:
-                audio_bytes = audio_value.read()
-
-                response = requests.post(
-                    f"{backend_url}/api/v1/voice/transform",
-                    files={
-                        "audio_file": ("recording.wav", audio_bytes, "audio/wav")
-                    },
-                    data={
-                        "voice_model": voice_model
-                    },
-                    timeout=60
-                )
-
-                if response.status_code == 200:
-                    result = response.json()
-
-                    if result.get("success"):
-                        st.markdown("---")
-                        st.subheader("Step 3 — Results")
-
-                        st.markdown("### ✅ Corrected Speech")
-                        st.success(result["corrected_text"])
-
-                        st.markdown("### 🔊 Generated Voice Output")
-                        audio_b64  = result.get("audio_base64", "")
-                        audio_mime = result.get("audio_mime_type", "audio/mpeg")
-                        if audio_b64:
-                            audio_out = base64.b64decode(audio_b64)
-                            st.audio(audio_out, format=audio_mime)
-                        else:
-                            st.warning("No audio returned from backend.")
-
-                        with st.expander("🔍 Raw ASR Transcript (debug)"):
-                            st.warning(result.get("raw_transcript", "(empty)"))
-                            st.caption(
-                                f"Processing time: {result.get('processing_time_ms', 'N/A')} ms  |  "
-                                f"Voice model: {result.get('voice_model', 'N/A')}"
-                            )
-
-                    else:
-                        error = result.get("error", {})
-                        st.error(
-                            f"Backend error [{error.get('code', 'UNKNOWN')}]: "
-                            f"{error.get('message', 'Something went wrong.')}"
-                        )
-
-                else:
-                    st.error(
-                        f"Request failed with status {response.status_code}. "
-                        "Check that the backend is running and the URL is correct."
-                    )
-
-            except requests.exceptions.ConnectionError:
-                st.error(
-                    "Could not connect to the backend. "
-                    "Make sure it is running and the URL in the sidebar is correct."
-                )
-            except requests.exceptions.Timeout:
-                st.error(
-                    "The request timed out after 60 seconds. "
-                    "The backend may be overloaded or the audio too long."
-                )
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
+    if st.button("Clear conversation"):
+        st.session_state.voxaid_chat = []
+        st.session_state.last_audio_hash = None
+        st.rerun()
