@@ -1,0 +1,17 @@
+{
+  "base_model_name": "facebook/wav2vec2-base-960h",
+  "dataset_name": "abnerh/TORGO-database",
+  "peft_method": "standard_lora",
+  "target_modules": [
+    "q_proj",
+    "v_proj",
+    "out_proj"
+  ],
+  "r": 8,
+  "lora_alpha": 16,
+  "lora_dropout": 0.1,
+  "max_steps": 300,
+  "learning_rate": 2e-05,
+  "final_eval_wer": 0.665049,
+  "final_eval_loss": 4.422219
+}

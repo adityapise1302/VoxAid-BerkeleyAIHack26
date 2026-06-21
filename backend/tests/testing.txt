@@ -1,0 +1,5 @@
+PYTHONPATH=. python tests/01_test_audio_preprocess.py --audio sample.mp3 done
+PYTHONPATH=. python tests/02_test_stt_model.py --audio sample.mp3 done
+PYTHONPATH=. python tests/03_test_claude_corrector.py done
+PYTHONPATH=. python tests/04_test_deepgram_tts.py 
+PYTHONPATH=. python tests/05_test_pipeline.py --audio sample.mp3
