@@ -1,45 +1,110 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from anthropic import Anthropic
 
 from app.config import Settings
-from app.services.agentverse_client import AgentverseSearchClient, AgentverseSearchError
-from app.services.agentverse_relay_chat import AgentverseChatError, AgentverseRelayChatClient
+from app.services.asi_one_client import ASIOneClient
+
+
+AGENT_ADDRESS_RE = re.compile(r"@?(agent1[a-zA-Z0-9]+)")
 
 
 class AgentverseRouter:
     """
-    VoxAid middle agent.
+    Backward-compatible router name.
 
-    This version actually sends the task to the selected Agentverse marketplace agent.
-    It does not show marketplace matches.
-    It does not ask for confirmation.
+    Actual flow:
+    1. Claude cleans/classifies user intent.
+    2. ASI:One handles the agentic task.
+    3. Claude rephrases ASI:One's output into a clean spoken answer.
     """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
         self.claude = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-        self.search_client = AgentverseSearchClient(
-            api_key=settings.agentverse_api_key,
-            search_url=settings.AGENTVERSE_SEARCH_URL,
-            timeout_seconds=settings.AGENTVERSE_TIMEOUT_SECONDS,
+        self.asi_one = ASIOneClient(
+            api_key=settings.ASI_ONE_API_KEY,
+            base_url=settings.ASI_ONE_BASE_URL,
+            model=settings.ASI_ONE_MODEL,
+            timeout_seconds=settings.ASI_ONE_TIMEOUT_SECONDS,
         )
 
-        self.chat_client = AgentverseRelayChatClient(
-            api_key=settings.agentverse_api_key,
-            wait_seconds=int(getattr(settings, "AGENTVERSE_CHAT_WAIT_SECONDS", 60)),
-            relay_agent_address=getattr(settings, "AGENTVERSE_RELAY_AGENT_ADDRESS", ""),
-            start_session=bool(getattr(settings, "AGENTVERSE_START_SESSION", False)),
-        )
+    def _remove_agent_addresses(self, text: str) -> str:
+        text = AGENT_ADDRESS_RE.sub("", text or "")
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
-    def classify_task(self, corrected_text: str) -> dict[str, str]:
-        text = (corrected_text or "").strip()
+    def _dedupe_repeated_command(self, text: str) -> str:
+        text = (text or "").strip()
 
         if not text:
+            return ""
+
+        lowered = text.lower()
+
+        repeated_patterns = [
+            "find me the nearest library",
+            "find me nearest library",
+            "give me the nearest library",
+            "give me nearest library",
+            "find nearest library",
+            "nearest library",
+        ]
+
+        matches = [pattern for pattern in repeated_patterns if pattern in lowered]
+
+        if "library" in lowered and matches:
+            return "Find the nearest library."
+
+        parts = re.split(r"[.!?]+", text)
+        seen = set()
+        cleaned_parts = []
+
+        for part in parts:
+            normalized = re.sub(r"\s+", " ", part.strip().lower())
+
+            if not normalized:
+                continue
+
+            if normalized not in seen:
+                seen.add(normalized)
+                cleaned_parts.append(part.strip())
+
+        if cleaned_parts:
+            return ". ".join(cleaned_parts).strip()
+
+        return text
+
+    def _clean_text(self, text: str) -> str:
+        text = self._remove_agent_addresses(text)
+        text = self._dedupe_repeated_command(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _empty_result(self) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "mode": "speech_only",
+            "action_status": "none",
+            "reason": "",
+            "task_for_agent": "",
+            "search_query": "",
+            "selected_agent": None,
+            "agent_text": "",
+            "spoken_summary": "",
+            "search_error": None,
+        }
+
+    def classify_task(self, corrected_text: str) -> dict[str, str]:
+        cleaned_text = self._clean_text(corrected_text)
+
+        if not cleaned_text:
             return {
                 "mode": "speech_only",
                 "reason": "No corrected text was available.",
@@ -47,29 +112,32 @@ class AgentverseRouter:
                 "search_query": "",
             }
 
-        system_prompt = (
-            "You are VoxAid's accessibility router. The user may have dysarthria "
-            "and motor limitations. Decide whether the corrected sentence is just "
-            "something to speak aloud, or a digital task that should be sent to an "
-            "Agentverse marketplace agent. Return strict JSON only."
-        )
+        system_prompt = """
+You are VoxAid's middle routing agent.
+
+The user may have dysarthria and motor limitations. Decide whether the corrected sentence is:
+1. speech_only: something the user simply wants spoken aloud
+2. agentic_task: something the user wants an assistant/agent to help accomplish
+
+Return strict JSON only.
+""".strip()
 
         user_prompt = f"""
-Corrected user speech:
-{text}
+Corrected and cleaned user speech:
+{cleaned_text}
 
 Rules:
-- Use "speech_only" when the user is expressing a sentence, need, answer, thought, or message that should simply be spoken aloud.
-- Use "agentverse_task" when the user asks to search, browse, summarize, compare, draft, write, schedule, fill a form, open/use a website, book/order/buy, or delegate a computer/digital task.
-- Make "task_for_agent" a direct instruction to the selected marketplace agent.
-- Make "search_query" short and targeted for finding the right marketplace agent.
+- speech_only: greetings, emotional statements, direct sentences, simple communication, or anything that just needs to be spoken aloud.
+- agentic_task: searching, browsing, finding nearby places, summarizing, comparing, drafting, writing messages/emails, scheduling, filling forms, planning, booking, ordering, buying, opening websites, or getting live/helpful information.
+- Make task_for_agent a clean direct instruction.
+- Do not include Agentverse addresses.
+- Do not repeat the same instruction multiple times.
 
 Return JSON exactly:
 {{
-  "mode": "speech_only" or "agentverse_task",
+  "mode": "speech_only" or "agentic_task",
   "reason": "short reason",
-  "task_for_agent": "instruction for Agentverse agent, or empty string",
-  "search_query": "marketplace search query, or empty string"
+  "task_for_agent": "clean instruction, or empty string"
 }}
 """.strip()
 
@@ -79,7 +147,12 @@ Return JSON exactly:
                 max_tokens=240,
                 temperature=0,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    }
+                ],
             )
 
             raw = "".join(
@@ -91,10 +164,13 @@ Return JSON exactly:
             data = json.loads(raw)
 
         except Exception:
-            lowered = text.lower()
+            lowered = cleaned_text.lower()
+
             task_markers = [
                 "search",
                 "find",
+                "nearest",
+                "near me",
                 "look up",
                 "browse",
                 "summarize",
@@ -118,164 +194,160 @@ Return JSON exactly:
             is_task = any(marker in lowered for marker in task_markers)
 
             data = {
-                "mode": "agentverse_task" if is_task else "speech_only",
+                "mode": "agentic_task" if is_task else "speech_only",
                 "reason": "Fallback keyword routing was used.",
-                "task_for_agent": text if is_task else "",
-                "search_query": text if is_task else "",
+                "task_for_agent": cleaned_text if is_task else "",
             }
 
         mode = data.get("mode", "speech_only")
 
-        if mode not in {"speech_only", "agentverse_task"}:
+        if mode not in {"speech_only", "agentic_task"}:
             mode = "speech_only"
+
+        task_for_agent = self._clean_text(
+            str(data.get("task_for_agent", "")).strip()
+        )
 
         return {
             "mode": mode,
             "reason": str(data.get("reason", "")).strip(),
-            "task_for_agent": str(data.get("task_for_agent", "")).strip(),
-            "search_query": str(data.get("search_query", "")).strip(),
+            "task_for_agent": task_for_agent,
+            "search_query": task_for_agent,
         }
 
-    def _empty_result(self) -> dict[str, Any]:
-        return {
-            "enabled": True,
-            "mode": "speech_only",
-            "action_status": "none",
-            "reason": "",
-            "task_for_agent": "",
-            "search_query": "",
-            "selected_agent": None,
-            "agent_text": "",
-            "spoken_summary": "",
-            "search_error": None,
-        }
+    def _rephrase_asi_one_output(
+        self,
+        original_corrected_text: str,
+        cleaned_user_text: str,
+        task_for_agent: str,
+        raw_asi_output: str,
+    ) -> str:
+        """
+        Final Claude rephrasing layer.
 
-    def _normalize_agent(self, raw_agent: dict[str, Any]) -> dict[str, Any]:
-        address = str(
-            raw_agent.get("address")
-            or raw_agent.get("agent_address")
-            or raw_agent.get("address_prefix")
-            or raw_agent.get("identifier")
-            or ""
-        )
+        ASI:One handles the agentic task.
+        Claude converts ASI:One's output into the final answer VoxAid should show/speak.
+        """
 
-        name = str(
-            raw_agent.get("name")
-            or raw_agent.get("title")
-            or raw_agent.get("agent_name")
-            or "Agentverse Agent"
-        )
+        raw_asi_output = self._remove_agent_addresses(raw_asi_output or "").strip()
 
-        description = str(
-            raw_agent.get("description")
-            or raw_agent.get("short_description")
-            or raw_agent.get("summary")
-            or raw_agent.get("readme")
-            or ""
-        )
+        if not raw_asi_output:
+            return "I understood your request, but ASI:One did not return a usable answer."
 
-        protocols = raw_agent.get("protocols") or raw_agent.get("protocol_digests") or []
+        system_prompt = """
+You are VoxAid's final response agent.
 
-        if not isinstance(protocols, list):
-            protocols = []
+Your job is to rephrase ASI:One's raw output into a clean, natural answer for a voice-only user with dysarthria and motor limitations.
 
-        return {
-            "name": name,
-            "address": address,
-            "description": description[:700],
-            "url": f"https://agentverse.ai/agents/{address}" if address else "https://agentverse.ai/",
-            "score": raw_agent.get("score") or raw_agent.get("rating") or raw_agent.get("rank"),
-            "status": raw_agent.get("status") or raw_agent.get("state") or raw_agent.get("agent_state"),
-            "developer": raw_agent.get("developer") or raw_agent.get("author") or raw_agent.get("owner"),
-            "protocols": protocols,
-        }
+Rules:
+- Return only the final answer the user should hear.
+- Do not mention ASI:One, Agentverse, marketplace agents, APIs, routing, or internal tools.
+- Do not include agent addresses.
+- Do not repeat the user's command.
+- Do not include debug text or metadata.
+- If ASI:One asks for missing information, rephrase that as a short conversational question.
+- If ASI:One gives useful information, summarize it clearly.
+- If the task is location-based and location is missing, ask for city, ZIP code, or current location.
+- Keep it concise, spoken-friendly, and helpful.
+""".strip()
 
-    def route(self, corrected_text: str) -> dict[str, Any]:
-        corrected_text = (corrected_text or "").strip()
-        decision = self.classify_task(corrected_text)
+        user_prompt = f"""
+Original corrected user speech:
+{original_corrected_text}
 
-        result = self._empty_result()
-        result.update(
-            {
-                "mode": decision["mode"],
-                "reason": decision["reason"],
-                "task_for_agent": decision["task_for_agent"],
-                "search_query": decision["search_query"],
-            }
-        )
+Cleaned user speech:
+{cleaned_user_text}
 
-        if decision["mode"] == "speech_only":
-            result["action_status"] = "none"
-            result["agent_text"] = corrected_text
-            result["spoken_summary"] = corrected_text
-            return result
+Task sent to ASI:One:
+{task_for_agent}
 
-        search_query = decision["search_query"] or decision["task_for_agent"] or corrected_text
-        task_for_agent = decision["task_for_agent"] or corrected_text
+Raw ASI:One output:
+{raw_asi_output}
+
+Now produce the final VoxAid response to speak to the user.
+""".strip()
 
         try:
-            raw_agent = self.search_client.search_top_agent(
-                query=search_query,
-                protocol_digest=self.settings.AGENTVERSE_PROTOCOL_DIGEST or None,
+            message = self.claude.messages.create(
+                model=self.settings.ANTHROPIC_MODEL,
+                max_tokens=400,
+                temperature=0.1,
+                system=system_prompt,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    }
+                ],
             )
 
-            if not raw_agent:
-                result["action_status"] = "no_agent_found"
-                result["agent_text"] = (
-                    "I understood the task, but I could not find an Agentverse marketplace agent for it."
-                )
-                result["spoken_summary"] = result["agent_text"]
-                return result
+            final_text = "".join(
+                getattr(block, "text", "")
+                for block in message.content
+                if getattr(block, "text", None)
+            ).strip()
 
-            selected_agent = self._normalize_agent(raw_agent)
-            target_address = selected_agent.get("address", "")
+            final_text = self._remove_agent_addresses(final_text)
+            final_text = re.sub(r"\s+", " ", final_text).strip()
 
-            if not target_address:
-                result["action_status"] = "no_agent_found"
-                result["agent_text"] = (
-                    "I found an Agentverse listing, but it did not include a usable agent address."
-                )
-                result["spoken_summary"] = result["agent_text"]
-                return result
+            return final_text or raw_asi_output
 
-            chat_result = self.chat_client.send_message(
-                target_address=target_address,
-                message=task_for_agent,
+        except Exception:
+            return raw_asi_output
+
+    def route(self, corrected_text: str) -> dict[str, Any]:
+        original_corrected_text = corrected_text or ""
+        cleaned_text = self._clean_text(original_corrected_text)
+
+        result = self._empty_result()
+
+        decision = self.classify_task(cleaned_text)
+
+        result["reason"] = decision["reason"]
+        result["task_for_agent"] = decision["task_for_agent"]
+        result["search_query"] = decision["search_query"]
+
+        if decision["mode"] == "speech_only":
+            result["mode"] = "speech_only"
+            result["action_status"] = "none"
+            result["agent_text"] = cleaned_text
+            result["spoken_summary"] = cleaned_text
+            return result
+
+        task_for_agent = decision["task_for_agent"] or cleaned_text
+
+        try:
+            raw_asi_response = self.asi_one.complete_task(
+                corrected_text=cleaned_text,
+                task_for_agent=task_for_agent,
             )
 
-            agent_text = (chat_result.get("agent_text") or "").strip()
+            final_response = self._rephrase_asi_one_output(
+                original_corrected_text=original_corrected_text,
+                cleaned_user_text=cleaned_text,
+                task_for_agent=task_for_agent,
+                raw_asi_output=raw_asi_response,
+            )
 
-            if not agent_text:
-                result["action_status"] = "agent_timeout"
-                result["selected_agent"] = selected_agent
-                result["agent_text"] = (
-                    "I routed your request to the selected Agentverse marketplace agent, "
-                    "but it did not return a response in time."
-                )
-                result["spoken_summary"] = result["agent_text"]
-                result["search_error"] = json.dumps(chat_result.get("debug_logs", []))[:1000]
-                return result
+            final_response = self._remove_agent_addresses(final_response)
+            final_response = final_response.strip()
+
+            if not final_response:
+                final_response = "I understood your request, but I could not generate a useful response."
 
             result["mode"] = "agentverse_task"
             result["action_status"] = "completed"
-            result["selected_agent"] = selected_agent
-            result["task_for_agent"] = task_for_agent
-            result["search_query"] = search_query
-            result["agent_text"] = agent_text
-            result["spoken_summary"] = agent_text
-
+            result["selected_agent"] = None
+            result["agent_text"] = final_response
+            result["spoken_summary"] = final_response
             return result
 
-        except AgentverseSearchError as exc:
-            result["action_status"] = "search_failed"
+        except Exception as exc:
+            result["mode"] = "agentverse_task"
+            result["action_status"] = "asi_one_failed"
             result["search_error"] = str(exc)
-            result["agent_text"] = "Agentverse search failed. Please check the API key and Agentverse configuration."
-            result["spoken_summary"] = result["agent_text"]
-            return result
-
-        except AgentverseChatError as exc:
-            result["action_status"] = "agent_chat_failed"
-            result["search_error"] = str(exc)
-            result["agent_text"] = "I found an Agentverse agent, but the chat handoff failed."
+            result["agent_text"] = (
+                "I could not complete the request. Please check your ASI:One API key and backend logs."
+            )
             result["spoken_summary"] = result["agent_text"]
             return result

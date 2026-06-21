@@ -20,7 +20,8 @@ st.set_page_config(
 )
 
 st.title("VoxAid")
-st.caption("Speech accessibility tool for people with dysarthria and other speech impediments")
+st.caption(
+    "Speech accessibility tool for people with dysarthria and other speech impediments")
 
 # ── Sidebar — backend config ──────────────────────────────────
 with st.sidebar:
@@ -158,6 +159,11 @@ def render_chat_message(message: dict):
                 st.markdown("#### VoxAid")
 
             st.markdown(agent_text)
+            debug_error = message.get("search_error", "")
+
+            if debug_error:
+                with st.expander("Developer debug details"):
+                    st.code(debug_error, language="json")
 
             if audio_base64:
                 try:
@@ -166,6 +172,7 @@ def render_chat_message(message: dict):
                 except TypeError:
                     audio_bytes = base64.b64decode(audio_base64)
                     st.audio(audio_bytes, format=audio_mime_type)
+
 
 for message in st.session_state.voxaid_chat:
     render_chat_message(message)
@@ -199,7 +206,7 @@ def process_voice_message(audio_file):
                 "voice_model": voice_model,
                 "enable_agentverse": "true",
             },
-            timeout=180,
+            timeout=600,
         )
 
     if response.status_code != 200:
@@ -237,6 +244,7 @@ def process_voice_message(audio_file):
             "audio_base64": result.get("audio_base64", ""),
             "audio_mime_type": result.get("audio_mime_type", "audio/mpeg"),
             "voice_model": result.get("voice_model", ""),
+            "search_error": agentverse.get("search_error"),
         }
     )
 

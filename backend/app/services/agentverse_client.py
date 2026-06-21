@@ -49,7 +49,7 @@ class AgentverseSearchClient:
         if not query:
             return []
 
-        limit = max(1, min(int(limit), 5))
+        limit = max(1, min(int(limit), 10))
 
         headers = {
             "Content-Type": "application/json",

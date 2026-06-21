@@ -23,15 +23,11 @@ class Settings(BaseSettings):
     DEEPGRAM_CONTAINER: str = ""
     DEEPGRAM_SAMPLE_RATE: int = 22050
 
-    # Fetch.ai / Agentverse
-    FETCHAI_AGENTVERSE_API_KEY: str = ""
-    AGENTVERSE_API_KEY: str = ""
-    AGENTVERSE_SEARCH_URL: str = "https://agentverse.ai/v1/search/agents"
-    AGENTVERSE_TIMEOUT_SECONDS: float = 10.0
-    AGENTVERSE_PROTOCOL_DIGEST: str = ""
-    AGENTVERSE_CHAT_WAIT_SECONDS: int = 60
-    AGENTVERSE_RELAY_AGENT_ADDRESS: str = ""
-    AGENTVERSE_START_SESSION: bool = False
+    # ASI:One
+    ASI_ONE_API_KEY: str = ""
+    ASI_ONE_BASE_URL: str = "https://api.asi1.ai/v1"
+    ASI_ONE_MODEL: str = "asi1"
+    ASI_ONE_TIMEOUT_SECONDS: float = 60.0
 
     MAX_TTS_CHARS: int = 2000
 
@@ -50,8 +46,8 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def agentverse_api_key(self) -> str:
-        return self.FETCHAI_AGENTVERSE_API_KEY or self.AGENTVERSE_API_KEY
+    def asi_one_ready(self) -> bool:
+        return bool(self.ASI_ONE_API_KEY)
 
 
 @lru_cache

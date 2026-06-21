@@ -51,7 +51,7 @@ async def health(request: Request):
         stt_model_loaded=pipeline_exists,
         claude_ready=bool(settings.ANTHROPIC_API_KEY),
         deepgram_ready=bool(settings.DEEPGRAM_API_KEY),
-        agentverse_ready=bool(settings.agentverse_api_key),
+        agentverse_ready=bool(settings.ASI_ONE_API_KEY),
     )
 
 
