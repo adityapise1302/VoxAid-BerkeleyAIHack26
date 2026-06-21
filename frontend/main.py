@@ -61,26 +61,25 @@ with st.sidebar:
 # Replace video paths with your actual files in an examples/ folder.
 EXAMPLES = [
     {
-        "title": "Example 1 - Lower Severity",
+        "title": "Example 1",
         "video": "examples/demo_example1.mp3",
         "raw":      "AND DA OFO OTER ASREMAIN GENTAMDIN DAN BUT I NEVER DI AN DA IT WAS ONY AN A FAVRIRARY A WEN FOR MY FESICO AND DOCTOR PEERSAN PIK APON MY REC PEECH AND DA I HAD A GOOD HUM THERPED SAID PETER HAMIA IN TAN BEARN SWALLO AND AN TA GOTME AXIOSHIDIN THE TONG AN TATI VANTO",
         "corrected": "And the, uh, other assessments remain, gentleman, and but I never did, and the it was only and a February a, when for my physical and [Doctor Pearson?] picked up on my speech and the I had a good, um, therapist said [Peter Hamia?] in, and brain swallow, and and they got me an, uh, excitation in the tongue and that I want to",
         "deepgram":  "And, about a lot of were asking me to get something done, but I never did. And, it was only in February I went for my physical and Doctor. Peterson picked up on my reading speech and I had a good home therapist that had me ENT and be on swallow. And then she got me exercising the tongue and these muscles.",
-        "true":"And, uh, my daughters were after me to get something done..."
     },
     {
         "title": "Example 2",
-        "video": "examples/example2.mp4",
-        "raw":      "CN YU HEP ME WIT MY MEDICASHUN",
-        "corrected": "Can you help me with my medication?",
-        "deepgram":  "",
+        "video": "examples/Dysarthria Example.mp3",
+        "raw":      "WELL I E CHAPE I WELL SHAQI HOPO WE CA I WILL GOING AGAIN LAAE CHA",
+        "corrected": "Well, I hope we can, I will be going again later, yeah.",
+        "deepgram":  "I feel like I'm stopping. I will succeed. Coco, we can. I'm gonna get no ever seven.",
     },
     {
         "title": "Example 3",
-        "video": "examples/example3.mp4",
-        "raw":      "FAVRIRARY FEJAKO PEERSAN PIGYA PA MA RICH WECH",
-        "corrected": "February checkup [Doctor Pierson?] picked up my prescription.",
-        "deepgram":  "",
+        "video": "examples/demo_example3.mp3",
+        "raw":      "MA MAY ME AN AD NOB ATA NN",
+        "corrected": "Mama, may me and [Anad?] know about it now?",
+        "deepgram":  "My baby ain't a nothing. All that is a man.",
     },
 ]
 
@@ -104,7 +103,7 @@ for example in EXAMPLES:
 
     with col_results:
         st.markdown("**🔴 Raw ASR Output**")
-        st.code(example["raw"], language=None)
+        st.warning(example["raw"])
 
         st.markdown("**✅ Claude Corrected**")
         st.success(example["corrected"])
@@ -173,7 +172,7 @@ if audio_value is not None:
                             st.warning("No audio returned from backend.")
 
                         with st.expander("🔍 Raw ASR Transcript (debug)"):
-                            st.code(result.get("raw_transcript", "(empty)"), language=None)
+                            st.warning(result.get("raw_transcript", "(empty)"))
                             st.caption(
                                 f"Processing time: {result.get('processing_time_ms', 'N/A')} ms  |  "
                                 f"Voice model: {result.get('voice_model', 'N/A')}"
